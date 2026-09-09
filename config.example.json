@@ -1,0 +1,6 @@
+{
+  "MAPEO_JUGADORES": {
+    "PILOTO_1": "correo1@ejemplo.com",
+    "PILOTO_2": ["correo2@ejemplo.com", "alias@ejemplo.com"]
+  }
+}

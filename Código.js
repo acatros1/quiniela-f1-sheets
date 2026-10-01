@@ -240,6 +240,19 @@ function calcularPuntuacionCarrera() {
   }
 
   if (!sheetRespuestas || sheetRespuestas.getLastRow() < 2) {
+    if (ui) {
+      const respDesierta = ui.alert(
+        '🏎️ Carrera sin pronósticos registrados',
+        `No hay respuestas registradas en el formulario para "${nombreGP}".\n\n` +
+        `¿Deseas registrar este Gran Premio asignando 0 PUNTOS a todos los participantes oficiales?`,
+        ui.ButtonSet.YES_NO
+      );
+
+      if (respDesierta === ui.Button.YES) {
+        registrarCarreraEnBlanco(nombreGP);
+        return;
+      }
+    }
     notificarGlobal('⚠️ No hay respuestas registradas en "Respuestas_Formulario".');
     return;
   }
@@ -1317,4 +1330,46 @@ function calcularProbabilidadesCampeonato() {
                   `• GPs restantes: ${gpsRestantes}\n` +
                   `• 1.000 temporadas simuladas con éxito.\n` +
                   `• Revisa la pestaña 'Probabilidades'.`);
+}
+/**
+ * Registra un Gran Premio desierto (0 puntos para todos los participantes oficiales).
+ * Actualiza Carreras_Anteriores, Leaderboard y Probabilidades.
+ */
+function registrarCarreraEnBlanco(nombreGP) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetAnteriores = ss.getSheetByName('Carreras_Anteriores');
+  const mapeo = obtenerMapeoJugadoresConfig();
+  const anioActual = new Date().getFullYear();
+  const filasCero = [];
+
+  for (let jugador in mapeo) {
+    const valor = mapeo[jugador];
+    const email = Array.isArray(valor) ? valor[0] : valor;
+    filasCero.push([anioActual, nombreGP, email, 0]);
+  }
+
+  if (filasCero.length > 0) {
+    // Si ya existía este GP en el historial, limpiarlo para no duplicar
+    if (sheetAnteriores.getLastRow() > 1) {
+      const datosAnt = sheetAnteriores.getRange(2, 1, sheetAnteriores.getLastRow() - 1, 4).getValues();
+      const filtrados = datosAnt.filter(r => !(r[0] == anioActual && String(r[1]).toLowerCase().trim() == nombreGP.toLowerCase().trim()));
+      sheetAnteriores.getRange(2, 1, sheetAnteriores.getLastRow() - 1, 4).clearContent();
+      if (filtrados.length > 0) {
+        sheetAnteriores.getRange(2, 1, filtrados.length, 4).setValues(filtrados);
+      }
+    }
+
+    sheetAnteriores.getRange(sheetAnteriores.getLastRow() + 1, 1, filasCero.length, 4).setValues(filasCero);
+    
+    // Actualizar Leaderboard y recalcular Monte Carlo
+    actualizarLeaderboard();
+    if (typeof calcularProbabilidadesCampeonato === 'function') {
+      calcularProbabilidadesCampeonato();
+    }
+
+    notificarGlobal(`✅ Gran Premio "${nombreGP}" registrado exitosamente con 0 puntos para todos.\n\n` +
+                    `• Leaderboard actualizado.\n` +
+                    `• Telemetría actualizada.\n` +
+                    `• Probabilidades recalculadas (se restó 1 GP al calendario).`);
+  }
 }

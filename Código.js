@@ -72,6 +72,7 @@ function onOpen() {
       .addItem('🏆 4. Actualizar Leaderboard y Gráficas', 'actualizarLeaderboard')
       .addSeparator()
       .addItem('📦 5. Migrar Datos Históricos (Hoja 1)', 'migrarResultadosExcel')
+      .addItem('🎲 6. Simular Probabilidades (Monte Carlo)', 'calcularProbabilidadesCampeonato')
       .addToUi();
   } catch(e) {}
 }
@@ -1176,4 +1177,144 @@ function mostrarRespuestas() {
     sheet.showSheet();
     notificarGlobal('🔓 La pestaña "Respuestas_Formulario" ahora es visible.');
   }
+}
+/**
+ * ====================================================================
+ * SIMULACIÓN MONTE CARLO: PROBABILIDAD DE CAMPEONATO
+ * ====================================================================
+ */
+function calcularProbabilidadesCampeonato() {
+  const TOTAL_GPS_TEMPORADA = 24; // Calendario oficial F1
+  const SIMULACIONES = 1000;
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetAnteriores = ss.getSheetByName('Carreras_Anteriores');
+  let sheetProb = ss.getSheetByName('Probabilidades');
+
+  if (!sheetProb) {
+    sheetProb = ss.insertSheet('Probabilidades');
+  }
+
+  if (!sheetAnteriores || sheetAnteriores.getLastRow() < 2) {
+    notificarGlobal('⚠️ No hay suficientes datos en Carreras_Anteriores para simular.');
+    return;
+  }
+
+  const datos = sheetAnteriores.getRange(2, 1, sheetAnteriores.getLastRow() - 1, 4).getValues();
+
+  // 1. Extraer GPs únicos disputados
+  const gpsUnicos = new Set();
+  const puntosPorJugador = {}; // nombre -> [pts_gp1, pts_gp2, ...]
+
+  datos.forEach(fila => {
+    const gp = String(fila[1] || '').trim();
+    const correo = String(fila[2] || '').trim();
+    const pts = Number(fila[3]) || 0;
+
+    if (gp && correo) {
+      gpsUnicos.add(gp);
+      const nombre = obtenerNombreJugador(correo);
+      if (!puntosPorJugador[nombre]) puntosPorJugador[nombre] = [];
+      puntosPorJugador[nombre].push(pts);
+    }
+  });
+
+  const gpsDisputados = gpsUnicos.size;
+  const gpsRestantes = Math.max(0, TOTAL_GPS_TEMPORADA - gpsDisputados);
+
+  // 2. Calcular estadísticas (Media y Desviación estándar) de cada uno
+  const statsJugadores = {};
+  const jugadores = Object.keys(puntosPorJugador);
+
+  jugadores.forEach(j => {
+    const historial = puntosPorJugador[j];
+    const totalPuntos = historial.reduce((a, b) => a + b, 0);
+    const media = totalPuntos / historial.length;
+    
+    // Varianza y desviación
+    const varianza = historial.reduce((sum, pts) => sum + Math.pow(pts - media, 2), 0) / historial.length;
+    const desv = Math.sqrt(varianza) || 5; // Mínimo 5 para dar variabilidad
+
+    statsJugadores[j] = {
+      actuales: totalPuntos,
+      media: media,
+      desv: desv,
+      victoriasSimuladas: 0
+    };
+  });
+
+  // 3. Simulación Monte Carlo (1.000 temporadas restantes)
+  for (let s = 0; s < SIMULACIONES; s++) {
+    const puntosFinalesTemp = {};
+
+    jugadores.forEach(j => {
+      let acumuladoSimulado = statsJugadores[j].actuales;
+
+      for (let g = 0; g < gpsRestantes; g++) {
+        // Generador normal aleatorio (Box-Muller)
+        const u1 = Math.random() || 0.0001;
+        const u2 = Math.random() || 0.0001;
+        const z = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+
+        // Puntos simulados con piso en 0 y techo en 100
+        let ptsCarrera = Math.round(statsJugadores[j].media + (z * statsJugadores[j].desv));
+        ptsCarrera = Math.max(0, Math.min(100, ptsCarrera));
+
+        acumuladoSimulado += ptsCarrera;
+      }
+
+      puntosFinalesTemp[j] = acumuladoSimulado;
+    });
+
+    // Encontrar el ganador de esta simulación
+    let mejorPuntaje = -1;
+    let ganador = '';
+    jugadores.forEach(j => {
+      if (puntosFinalesTemp[j] > mejorPuntaje) {
+        mejorPuntaje = puntosFinalesTemp[j];
+        ganador = j;
+      }
+    });
+
+    if (ganador) {
+      statsJugadores[ganador].victoriasSimuladas++;
+    }
+  }
+
+  // 4. Preparar tabla de resultados
+  const filasSalida = [];
+  jugadores.forEach(j => {
+    const prob = (statsJugadores[j].victoriasSimuladas / SIMULACIONES) * 100;
+    filasSalida.push([
+      j,
+      statsJugadores[j].actuales,
+      Math.round(statsJugadores[j].media * 10) / 10,
+      prob / 100 // En decimal para formato porcentaje (0.45 = 45%)
+    ]);
+  });
+
+  // Ordenar por probabilidad descendente
+  filasSalida.sort((a, b) => b[3] - a[3]);
+
+  // Escribir en la hoja
+  sheetProb.clear();
+  const encabezados = ['Participante', 'Puntos Actuales', 'Promedio Pts/GP', 'Probabilidad de Ganar'];
+  sheetProb.getRange(1, 1, 1, encabezados.length)
+    .setValues([encabezados])
+    .setBackground('#111827')
+    .setFontColor('#FFFFFF')
+    .setFontWeight('bold')
+    .setHorizontalAlignment('center');
+
+  if (filasSalida.length > 0) {
+    sheetProb.getRange(2, 1, filasSalida.length, 4).setValues(filasSalida);
+    sheetProb.getRange(2, 1, filasSalida.length, 3).setHorizontalAlignment('center');
+    sheetProb.getRange(2, 4, filasSalida.length, 1).setNumberFormat('0.0%').setHorizontalAlignment('center');
+  }
+
+  notificarGlobal(`🎲 Simulación Monte Carlo Completada:\n\n` +
+                  `• GPs disputados: ${gpsDisputados} / ${TOTAL_GPS_TEMPORADA}\n` +
+                  `• GPs restantes: ${gpsRestantes}\n` +
+                  `• 1.000 temporadas simuladas con éxito.\n` +
+                  `• Revisa la pestaña 'Probabilidades'.`);
 }

@@ -219,8 +219,7 @@ function consultarAPIJolpica(año, carrera) {
 
 /**
  * Calcula puntos con sugerencia automática de Nombre/Fecha desde la API.
- * Corrige duplicados: Si un participante envió con 2 correos diferentes,
- * solo evalúa su último envío válido.
+ * Corrige duplicados y permite registrar carreras desiertas con 0 puntos.
  */
 function calcularPuntuacionCarrera() {
   let ui = null;
@@ -239,6 +238,23 @@ function calcularPuntuacionCarrera() {
     sheetHistorico = ss.getSheetByName('Historico_Pronosticos');
   }
 
+  // 1. Obtener primero el nombre del GP sugerido o ingresado por el usuario
+  const props = PropertiesService.getScriptProperties();
+  const gpSugerido = props.getProperty('ULTIMO_GP_NOMBRE') || "GP de Azerbaiyán";
+  const fechaSugerida = props.getProperty('ULTIMO_GP_FECHA') || "";
+
+  let nombreGP = gpSugerido;
+  let fechaLimite = fechaSugerida ? new Date(fechaSugerida) : null;
+
+  if (ui) {
+    const respGP = ui.prompt('Identificador del GP', `Acepta o edita el nombre del GP para el registro:`, ui.ButtonSet.OK_CANCEL);
+    if (respGP.getSelectedButton() !== ui.Button.OK) return;
+    if (respGP.getResponseText().trim() !== "") {
+      nombreGP = respGP.getResponseText().trim();
+    }
+  }
+
+  // 2. Si no hay pronósticos, preguntar para registrar 0 puntos de inmediato
   if (!sheetRespuestas || sheetRespuestas.getLastRow() < 2) {
     if (ui) {
       const respDesierta = ui.alert(
@@ -257,25 +273,13 @@ function calcularPuntuacionCarrera() {
     return;
   }
 
+  // 3. Si sí hay jugadas, verificar que la API esté descargada
   if (!sheetAPI || sheetAPI.getLastRow() < 11) {
     notificarGlobal('⚠️ Primero debes descargar los 10 resultados oficiales en "Resultados_API".');
     return;
   }
 
-  const props = PropertiesService.getScriptProperties();
-  const gpSugerido = props.getProperty('ULTIMO_GP_NOMBRE') || "GP Carrera";
-  const fechaSugerida = props.getProperty('ULTIMO_GP_FECHA') || "";
-
-  let nombreGP = gpSugerido;
-  let fechaLimite = fechaSugerida ? new Date(fechaSugerida) : null;
-
   if (ui) {
-    const respGP = ui.prompt('Identificador del GP', `Acepta o edita el nombre del GP para el registro:`, ui.ButtonSet.OK_CANCEL);
-    if (respGP.getSelectedButton() !== ui.Button.OK) return;
-    if (respGP.getResponseText().trim() !== "") {
-      nombreGP = respGP.getResponseText().trim();
-    }
-
     const respHora = ui.prompt(
       '⏱️ Hora Límite para enviar pronósticos', 
       `Fecha/Hora límite sugerida por la API: ${fechaSugerida || 'Ninguna'}\n\nIngresa una fecha (YYYY-MM-DD HH:MM) o deja igual para aplicar:`, 
@@ -311,8 +315,8 @@ function calcularPuntuacionCarrera() {
   }
   if (idxCorreo === -1) idxCorreo = encabezados.length - 1;
 
-  // 1. FILTRADO INTELIGENTE: Deduplica por NOMBRE DE PARTICIPANTE (no por correo)
-  const ultimasRespuestasMap = {}; // nombreJugador -> fila
+  // Filtrado y deduplicación por participante
+  const ultimasRespuestasMap = {};
   let jugadasDescartadasPorTiempo = 0;
 
   respuestas.forEach(fila => {
@@ -325,10 +329,7 @@ function calcularPuntuacionCarrera() {
     }
 
     if (correo) {
-      // Obtenemos el nombre oficial mapeado
       const nombreJugador = obtenerNombreJugador(correo);
-
-      // Si ya existía un envío previo del mismo jugador, conservamos el más reciente
       if (!ultimasRespuestasMap[nombreJugador] || marcaTemporal > new Date(ultimasRespuestasMap[nombreJugador][0])) {
         ultimasRespuestasMap[nombreJugador] = fila;
       }
@@ -396,7 +397,6 @@ function calcularPuntuacionCarrera() {
     ]);
   });
 
-  // Limpiar registros viejos del mismo GP si se está recalculando
   if (sheetAnteriores.getLastRow() > 1) {
     const datosAnt = sheetAnteriores.getRange(2, 1, sheetAnteriores.getLastRow() - 1, 4).getValues();
     const datosFiltrados = datosAnt.filter(r => !(r[0] == anioActual && String(r[1]).toLowerCase().trim() == nombreGP.toLowerCase().trim()));
@@ -436,6 +436,9 @@ function calcularPuntuacionCarrera() {
 
   notificarGlobal(mensajeExito);
   actualizarLeaderboard();
+  if (typeof calcularProbabilidadesCampeonato === 'function') {
+    calcularProbabilidadesCampeonato();
+  }
 
   if (ui) {
     const respLimpiar = ui.alert(
